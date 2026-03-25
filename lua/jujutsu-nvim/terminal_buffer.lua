@@ -25,21 +25,25 @@ M.run_command_in_terminal_window = function (args, opts)
   local cmd_str = table.concat(vim.tbl_map(vim.fn.shellescape, cmd), " ")
   local shell_cmd = "sh -c " .. vim.fn.shellescape(cmd_str)
 
+  -- Save window options that TermOpen autocmd will override
+  local save_number = vim.wo.number
+  local save_relativenumber = vim.wo.relativenumber
+
   if window and vim.api.nvim_win_is_valid(window) then
     -- Reuse existing window - replace buffer with new terminal buffer
     -- Save current window to restore focus later
     local current_win = vim.api.nvim_get_current_win()
-    
+
     -- Focus the window temporarily
     vim.api.nvim_set_current_win(window)
 
     -- Create a new empty buffer
     vim.cmd("enew")
     buffer = vim.api.nvim_get_current_buf()
-    
-    -- Start terminal in the new buffer using the shell command
+
+    -- Start terminal in the new buffer
     vim.fn.termopen(shell_cmd)
-    
+
     -- Restore focus to original window after a brief delay
     -- This ensures the terminal buffer has time to initialize
     if current_win ~= window and vim.api.nvim_win_is_valid(current_win) then
@@ -65,6 +69,10 @@ M.run_command_in_terminal_window = function (args, opts)
     window = vim.api.nvim_get_current_win()
     buffer = vim.api.nvim_get_current_buf()
   end
+
+  -- Restore window options that TermOpen autocmd disabled
+  vim.wo[window].number = save_number
+  vim.wo[window].relativenumber = save_relativenumber
 
   vim.bo[buffer].bufhidden = 'wipe'
   vim.bo[buffer].buflisted = false
