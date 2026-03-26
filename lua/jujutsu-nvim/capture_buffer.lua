@@ -50,6 +50,13 @@ M.open = function(opts)
     if opts.on_submit then
       -- Filter out lines starting with "JJ:"
       local filtered_lines = u.remove(content, function(x) return x:match("^JJ:") end)
+      -- Trim leading and trailing empty lines (matches jj's trim_matches('\n') behavior)
+      while #filtered_lines > 0 and filtered_lines[1]:match("^%s*$") do
+        table.remove(filtered_lines, 1)
+      end
+      while #filtered_lines > 0 and filtered_lines[#filtered_lines]:match("^%s*$") do
+        table.remove(filtered_lines)
+      end
       local user_content = table.concat(filtered_lines, "\n")
       opts.on_submit(user_content)
     end
@@ -60,6 +67,13 @@ M.open = function(opts)
       local content = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
       -- Filter out lines starting with "JJ:"
       local filtered_lines = u.remove(content, function(x) return x:match("^JJ:") end)
+      -- Trim leading and trailing empty lines (matches jj's trim_matches('\n') behavior)
+      while #filtered_lines > 0 and filtered_lines[1]:match("^%s*$") do
+        table.remove(filtered_lines, 1)
+      end
+      while #filtered_lines > 0 and filtered_lines[#filtered_lines]:match("^%s*$") do
+        table.remove(filtered_lines)
+      end
       local user_content = table.concat(filtered_lines, "\n")
       opts.on_submit(user_content)
       vim.bo[buf].modified = false
