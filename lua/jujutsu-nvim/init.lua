@@ -1051,7 +1051,7 @@ local function close_jj_window()
   M.state = default_state
 end
 
-local function run_in_jj_window(args, title, setup_keymaps_fn)
+local function run_in_jj_window(args, title, setup_keymaps_fn, saved_change_id)
   terminal_buffer.run_command_in_terminal_window(args, {
     buf = M.state.log_buffer,
     window = M.state.log_window,
@@ -1069,6 +1069,19 @@ local function run_in_jj_window(args, title, setup_keymaps_fn)
           return true
         end
       })
+    end,
+    on_content_loaded = function(window, buffer)
+      -- Restore cursor to the same change_id after content is loaded
+      if saved_change_id and vim.api.nvim_win_is_valid(window) then
+        local lines = vim.api.nvim_buf_get_lines(buffer, 0, -1, false)
+        for i, line in ipairs(lines) do
+          local line_change_id = jj.extract_change_id(line)
+          if line_change_id and jj.change_ids_match(line_change_id, saved_change_id) then
+            vim.api.nvim_win_set_cursor(window, { i, 0 })
+            return
+          end
+        end
+      end
     end,
     on_close = function()
       M.state.log_window = nil
@@ -1138,6 +1151,16 @@ function M.log(args)
     table.insert(log_args, M.state.custom_revset)
   end
 
+  -- Save the change_id at cursor before refresh (more reliable than line number)
+  local saved_change_id = nil
+  if M.state.log_window and vim.api.nvim_win_is_valid(M.state.log_window) and M.state.log_buffer then
+    local cursor_line = vim.api.nvim_win_get_cursor(M.state.log_window)[1]
+    local line = vim.api.nvim_buf_get_lines(M.state.log_buffer, cursor_line - 1, cursor_line, false)[1]
+    if line then
+      saved_change_id = jj.extract_change_id(line)
+    end
+  end
+
   vim.list_extend(log_args, args)
   run_in_jj_window(log_args, "JJ Log", function(buf)
     -- Bind keymaps
@@ -1147,18 +1170,7 @@ function M.log(args)
         { buffer = buf, silent = true, nowait = true, desc = "JJ: " .. binding.desc }
       )
     end
-
-    -- After loading the Jujutsu log, jump to the current change
-    vim.api.nvim_create_autocmd("TermClose", {
-      buffer = buf,
-      once = true,
-      callback = function()
-        vim.schedule(function()
-          jump_to_current_change(true)
-        end)
-      end,
-    })
-  end)
+  end, saved_change_id)
 end
 
 --- Run any jj command interactively

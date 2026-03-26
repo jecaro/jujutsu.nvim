@@ -220,6 +220,7 @@ end
 --- @field on_exit fun(exit_code: number)? Callback invoked when the command completes
 --- @field on_close function? Callback invoked when the buffer is wiped out
 --- @field on_ready fun(window: number, buffer: number)? Callback invoked when buffer is ready
+--- @field on_content_loaded fun(window: number, buffer: number)? Callback invoked after content is loaded
 
 --- Runs a jj command and displays output in a plain buffer.
 --- If a window is provided and valid, reuses it by replacing the buffer.
@@ -374,6 +375,11 @@ M.run_command_in_terminal_window = function(args, opts)
 
           -- Apply syntax highlighting
           apply_highlights(buffer)
+
+          -- Notify that content is loaded
+          if opts.on_content_loaded then
+            opts.on_content_loaded(window, buffer)
+          end
         end
 
         -- Call exit callback
