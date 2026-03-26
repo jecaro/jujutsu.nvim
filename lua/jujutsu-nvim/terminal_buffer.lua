@@ -32,9 +32,16 @@ local function is_file_line(line)
   return after_graph:match("^[MADRC]%s+[%w_./%-]+$") ~= nil
 end
 
+--- Check if a line is the working copy (has @ marker)
+--- @param line string
+--- @return boolean
+local function is_working_copy(line)
+  return line:match("^[│├─╯╰┌└┐┘╮╭╋┼┬┴ ]*@") ~= nil
+end
+
 --- Parse jj log output into structured commit data
 --- @param lines string[]
---- @return table[] commits Array of {header_idx, description_lines, file_lines}
+--- @return table[] commits Array of {header_idx, description_lines, file_lines, is_working_copy}
 local function parse_commits(lines)
   local commits = {}
   local current_commit = nil
@@ -52,6 +59,7 @@ local function parse_commits(lines)
         header_line = line,
         description_lines = {},
         file_lines = {},
+        is_working_copy = is_working_copy(line),
       }
     elseif current_commit then
       if is_file_line(line) then
@@ -338,6 +346,13 @@ M.run_command_in_terminal_window = function(args, opts)
             local old_state = buffer_state[opts.buf]
             if old_state then
               expanded_commits = old_state.expanded_commits
+            else
+              -- Auto-expand working copy commit by default
+              for _, commit in ipairs(commits) do
+                if commit.is_working_copy and #commit.file_lines > 0 then
+                  expanded_commits[commit.change_id] = true
+                end
+              end
             end
 
             local display_lines, line_to_commit = build_display_lines(commits, expanded_commits)
