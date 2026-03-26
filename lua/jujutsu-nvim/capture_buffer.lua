@@ -41,41 +41,34 @@ M.open = function(opts)
   vim.api.nvim_win_set_height(win, math.floor(vim.o.lines * 0.4))
   vim.api.nvim_win_set_cursor(win, { 1, 0 })
 
+  -- Extract user content from buffer (filter JJ: lines, trim empty lines)
+  local function get_user_content()
+    local content = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    -- Filter out lines starting with "JJ:"
+    local filtered_lines = u.remove(content, function(x) return x:match("^JJ:") end)
+    -- Trim leading and trailing empty lines (matches jj's trim_matches('\n') behavior)
+    while #filtered_lines > 0 and filtered_lines[1]:match("^%s*$") do
+      table.remove(filtered_lines, 1)
+    end
+    while #filtered_lines > 0 and filtered_lines[#filtered_lines]:match("^%s*$") do
+      table.remove(filtered_lines)
+    end
+    return table.concat(filtered_lines, "\n")
+  end
+
   -- Submit and abort handlers
   local function submit()
-    -- Makes it so the cursor remains at top after edit buffer close
     vim.cmd.stopinsert()
-    local content = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local user_content = get_user_content()
     vim.api.nvim_buf_delete(buf, { force = true })
     if opts.on_submit then
-      -- Filter out lines starting with "JJ:"
-      local filtered_lines = u.remove(content, function(x) return x:match("^JJ:") end)
-      -- Trim leading and trailing empty lines (matches jj's trim_matches('\n') behavior)
-      while #filtered_lines > 0 and filtered_lines[1]:match("^%s*$") do
-        table.remove(filtered_lines, 1)
-      end
-      while #filtered_lines > 0 and filtered_lines[#filtered_lines]:match("^%s*$") do
-        table.remove(filtered_lines)
-      end
-      local user_content = table.concat(filtered_lines, "\n")
       opts.on_submit(user_content)
     end
   end
 
   vim.api.nvim_create_autocmd('BufWriteCmd', {
     callback = function()
-      local content = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-      -- Filter out lines starting with "JJ:"
-      local filtered_lines = u.remove(content, function(x) return x:match("^JJ:") end)
-      -- Trim leading and trailing empty lines (matches jj's trim_matches('\n') behavior)
-      while #filtered_lines > 0 and filtered_lines[1]:match("^%s*$") do
-        table.remove(filtered_lines, 1)
-      end
-      while #filtered_lines > 0 and filtered_lines[#filtered_lines]:match("^%s*$") do
-        table.remove(filtered_lines)
-      end
-      local user_content = table.concat(filtered_lines, "\n")
-      opts.on_submit(user_content)
+      opts.on_submit(get_user_content())
       vim.bo[buf].modified = false
     end,
     buffer = buf,
