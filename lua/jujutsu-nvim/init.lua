@@ -1059,6 +1059,15 @@ local function run_in_jj_window(args, title, setup_keymaps_fn)
       M.state.log_buffer = buffer
       M.state.log_window = window
       setup_keymaps_fn(buffer, window)
+
+      -- Allow :e to refresh the buffer
+      vim.api.nvim_create_autocmd("BufReadCmd", {
+        buffer = buffer,
+        callback = function()
+          M.log()
+          return true
+        end
+      })
     end,
     on_close = function()
       M.state.log_window = nil
