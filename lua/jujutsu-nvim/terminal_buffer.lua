@@ -1,10 +1,134 @@
 local M = {}
 
+-- Buffer-local fold state: maps buffer -> { expanded_commits = {change_id = true}, commit_data = {...} }
+local buffer_state = {}
+
 --- Strip ANSI escape codes from a string
 --- @param str string
 --- @return string
 local function strip_ansi(str)
   return str:gsub("\27%[[0-9;]*m", "")
+end
+
+--- Check if a line is a commit header (contains @○◆◉ followed by change_id)
+--- @param line string
+--- @return string? change_id if this is a commit header
+local function get_commit_header_change_id(line)
+  -- Match: marker (@○◆◉) followed by spaces and 8-letter change_id
+  return line:match("[@○◆◉]%s+(%a+)")
+end
+
+--- Check if a line is a file change line (M/A/D/R followed by path)
+--- @param line string
+--- @return boolean
+local function is_file_line(line)
+  -- File lines look like: "│  M path/to/file" or "│  A path" etc
+  -- They have graph chars, then spaces, then a single letter (M/A/D/R/C), then space, then a file path
+  -- The file path typically contains / or . (like lua/foo.lua or README.md)
+  -- We need to distinguish from description lines like "│  (no description set)"
+  local after_graph = line:match("^[│├─╯╰┌└┐┘╮╭╋┼┬┴~]+%s+(.*)$")
+  if not after_graph then return false end
+  -- Check if it starts with a single status letter followed by space and a path-like string
+  return after_graph:match("^[MADRC]%s+[%w_./%-]+$") ~= nil
+end
+
+--- Parse jj log output into structured commit data
+--- @param lines string[]
+--- @return table[] commits Array of {header_idx, description_lines, file_lines}
+local function parse_commits(lines)
+  local commits = {}
+  local current_commit = nil
+
+  for i, line in ipairs(lines) do
+    local change_id = get_commit_header_change_id(line)
+    if change_id then
+      -- Start a new commit
+      if current_commit then
+        commits[#commits + 1] = current_commit
+      end
+      current_commit = {
+        change_id = change_id,
+        header_idx = i,
+        header_line = line,
+        description_lines = {},
+        file_lines = {},
+      }
+    elseif current_commit then
+      if is_file_line(line) then
+        current_commit.file_lines[#current_commit.file_lines + 1] = line
+      else
+        current_commit.description_lines[#current_commit.description_lines + 1] = line
+      end
+    end
+  end
+
+  -- Don't forget the last commit
+  if current_commit then
+    commits[#commits + 1] = current_commit
+  end
+
+  return commits
+end
+
+--- Build display lines from commits based on fold state
+--- @param commits table[]
+--- @param expanded_commits table<string, boolean>
+--- @return string[] lines to display
+--- @return table<number, string> line_to_commit maps line number to change_id
+local function build_display_lines(commits, expanded_commits)
+  local lines = {}
+  local line_to_commit = {}
+
+  for _, commit in ipairs(commits) do
+    -- Add header line
+    lines[#lines + 1] = commit.header_line
+    line_to_commit[#lines] = commit.change_id
+
+    -- Add description lines
+    for _, desc_line in ipairs(commit.description_lines) do
+      lines[#lines + 1] = desc_line
+      line_to_commit[#lines] = commit.change_id
+    end
+
+    -- Add file lines only if expanded
+    if expanded_commits[commit.change_id] then
+      for _, file_line in ipairs(commit.file_lines) do
+        lines[#lines + 1] = file_line
+        line_to_commit[#lines] = commit.change_id
+      end
+    end
+  end
+
+  return lines, line_to_commit
+end
+
+--- Toggle fold for commit at cursor
+--- @param buf number
+M.toggle_fold = function(buf)
+  local state = buffer_state[buf]
+  if not state then return end
+
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+  local change_id = state.line_to_commit[cursor_line]
+  if not change_id then return end
+
+  -- Toggle expanded state
+  if state.expanded_commits[change_id] then
+    state.expanded_commits[change_id] = nil
+  else
+    state.expanded_commits[change_id] = true
+  end
+
+  -- Rebuild display
+  local lines, line_to_commit = build_display_lines(state.commits, state.expanded_commits)
+  state.line_to_commit = line_to_commit
+
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+
+  -- Re-apply highlights
+  apply_highlights(buf)
 end
 
 --- Setup highlight groups for jj log output
@@ -23,11 +147,14 @@ local function setup_highlights()
   hl(0, "JJEmpty", { fg = "NvimLightGreen" })                         -- empty = green
   hl(0, "JJGraph", { fg = "NvimDarkGrey4" })                          -- separator = bright black
   hl(0, "JJDescription", { link = "Normal" })                         -- description text
+  hl(0, "JJFileModified", { fg = "NvimLightCyan" })                   -- M = modified
+  hl(0, "JJFileAdded", { fg = "NvimLightGreen" })                     -- A = added
+  hl(0, "JJFileDeleted", { fg = "NvimLightRed" })                     -- D = deleted
 end
 
 --- Apply syntax highlighting to the buffer
 --- @param buf number Buffer handle
-local function apply_highlights(buf)
+function apply_highlights(buf)
   setup_highlights()
 
   -- Clear any existing matches
@@ -38,7 +165,7 @@ local function apply_highlights(buf)
   if win == -1 then return end
 
   -- Graph characters (│├─╯╰┌└┐┘╮╭)
-  vim.fn.matchadd("JJGraph", "[│├─╯╰┌└┐┘╮╭╋┼┬┴]", 10, -1, { window = win })
+  vim.fn.matchadd("JJGraph", "[│├─╯╰┌└┐┘╮╭╋┼┬┴~]", 10, -1, { window = win })
 
   -- Email addresses (high priority to avoid @ conflict)
   vim.fn.matchadd("JJEmail", "\\v[a-zA-Z0-9._%+-]+\\@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", 15, -1, { window = win })
@@ -70,6 +197,11 @@ local function apply_highlights(buf)
 
   -- (no description set)
   vim.fn.matchadd("JJEmpty", "(no description set)", 10, -1, { window = win })
+
+  -- File change indicators
+  vim.fn.matchadd("JJFileModified", "\\v^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+\\zsM\\ze\\s", 12, -1, { window = win })
+  vim.fn.matchadd("JJFileAdded", "\\v^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+\\zsA\\ze\\s", 12, -1, { window = win })
+  vim.fn.matchadd("JJFileDeleted", "\\v^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+\\zsD\\ze\\s", 12, -1, { window = win })
 end
 
 --- @class TerminalWindowOpts
@@ -91,6 +223,7 @@ M.run_command_in_terminal_window = function(args, opts)
   local buffer = opts.buf
   local window = opts.window
 
+  -- Add -s flag for log commands to get file summary
   local cmd = vim.list_extend({ "jj", "--no-pager" }, args)
 
   -- Create or reuse buffer
@@ -139,7 +272,11 @@ M.run_command_in_terminal_window = function(args, opts)
     vim.api.nvim_create_autocmd("BufWipeout", {
       buffer = buffer,
       once = true,
-      callback = opts.on_close
+      callback = function()
+        -- Clean up buffer state
+        buffer_state[buffer] = nil
+        opts.on_close()
+      end
     })
   end
 
@@ -182,16 +319,43 @@ M.run_command_in_terminal_window = function(args, opts)
     on_exit = function(_, exit_code)
       vim.schedule(function()
         -- Combine stdout and stderr
-        local lines = stdout_lines
+        local all_lines = stdout_lines
         for _, line in ipairs(stderr_lines) do
-          lines[#lines + 1] = line
+          all_lines[#all_lines + 1] = line
         end
 
         -- Write lines to buffer if it still exists
         if vim.api.nvim_buf_is_valid(buffer) then
-          vim.bo[buffer].modifiable = true
-          vim.api.nvim_buf_set_lines(buffer, 0, -1, false, lines)
-          vim.bo[buffer].modifiable = false
+          -- Check if this is a log command (has commit structure)
+          local is_log = args[1] == "log"
+
+          if is_log then
+            -- Parse commits and set up fold state
+            local commits = parse_commits(all_lines)
+            local expanded_commits = {}
+
+            -- Preserve expanded state from previous buffer if any
+            local old_state = buffer_state[opts.buf]
+            if old_state then
+              expanded_commits = old_state.expanded_commits
+            end
+
+            local display_lines, line_to_commit = build_display_lines(commits, expanded_commits)
+
+            buffer_state[buffer] = {
+              commits = commits,
+              expanded_commits = expanded_commits,
+              line_to_commit = line_to_commit,
+            }
+
+            vim.bo[buffer].modifiable = true
+            vim.api.nvim_buf_set_lines(buffer, 0, -1, false, display_lines)
+            vim.bo[buffer].modifiable = false
+          else
+            vim.bo[buffer].modifiable = true
+            vim.api.nvim_buf_set_lines(buffer, 0, -1, false, all_lines)
+            vim.bo[buffer].modifiable = false
+          end
 
           -- Apply syntax highlighting
           apply_highlights(buffer)

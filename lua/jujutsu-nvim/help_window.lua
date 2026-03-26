@@ -22,6 +22,7 @@ local action_help_info = {
   quit = { group = "log", order = 1 },
   refresh = { group = "log", order = 2 },
   set_revset = { group = "log", order = 3 },
+  toggle_files = { group = "log", order = 4 },
 
   open_diff = { group = "navigation", order = 3 },
 

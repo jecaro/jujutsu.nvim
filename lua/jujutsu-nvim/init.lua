@@ -80,6 +80,7 @@ local default_config = {
     F = { cmd = "pull_bookmark", desc = "Pull" },
     m = { cmd = "toggle_change", desc = "Toggle selection" },
     c = { cmd = "clear_selections", desc = "Clear all selections" },
+    ["="] = { cmd = "toggle_files", desc = "Toggle file list" },
   }
 }
 
@@ -1114,6 +1115,9 @@ local actions = {
     update_selection_display()
     vim.notify("Cleared all selections", vim.log.levels.INFO)
   end,
+  ["toggle_files"] = function()
+    terminal_buffer.toggle_fold(M.state.log_buffer)
+  end,
 }
 
 --- Setup jujutsu.nvim with user configuration
@@ -1126,7 +1130,7 @@ end
 --- @param args string[]? Additional arguments to pass to jj log
 function M.log(args)
   args = args or {}
-  local log_args = { "log" }
+  local log_args = { "log", "-s" }  -- Always include -s for file summary (used by folds)
 
   -- Add custom revset if set
   if M.state.custom_revset then
