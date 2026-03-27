@@ -155,9 +155,11 @@ local function setup_highlights()
   hl(0, "JJEmpty", { fg = "NvimLightGreen" })                         -- empty = green
   hl(0, "JJGraph", { fg = "NvimDarkGrey4" })                          -- separator = bright black
   hl(0, "JJDescription", { link = "Normal" })                         -- description text
-  hl(0, "JJFileModified", { fg = "NvimLightCyan" })                   -- M = modified
-  hl(0, "JJFileAdded", { fg = "NvimLightGreen" })                     -- A = added
-  hl(0, "JJFileDeleted", { fg = "NvimLightRed" })                     -- D = deleted
+  hl(0, "JJFileModified", { link = "diffChanged" })                   -- M = modified (cyan)
+  hl(0, "JJFileAdded", { link = "diffAdded" })                        -- A = added (green)
+  hl(0, "JJFileDeleted", { link = "diffRemoved" })                    -- D = deleted (red)
+  hl(0, "JJFileRenamed", { link = "diffChanged" })                    -- R = renamed (cyan)
+  hl(0, "JJFileCopied", { link = "diffAdded" })                       -- C = copied (green)
 end
 
 --- Apply syntax highlighting to the buffer using vim syntax (buffer-local)
@@ -167,6 +169,7 @@ function apply_highlights(buf)
 
   vim.api.nvim_buf_call(buf, function()
     vim.cmd([[
+      syntax enable
       syntax clear
 
       " Graph characters
@@ -201,10 +204,13 @@ function apply_highlights(buf)
       syntax match JJEmpty /(empty)/
       syntax match JJEmpty /(no description set)/
 
-      " File change indicators
-      syntax match JJFileModified /^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]\+\zsM\ze\s/
-      syntax match JJFileAdded /^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]\+\zsA\ze\s/
-      syntax match JJFileDeleted /^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]\+\zsD\ze\s/
+      " File change lines (status letter + filepath)
+      " Match lines that end with: M/A/D/R/C + space + filepath
+      syntax match JJFileModified /M [a-zA-Z0-9_./-]\+$/
+      syntax match JJFileAdded /A [a-zA-Z0-9_./-]\+$/
+      syntax match JJFileDeleted /D [a-zA-Z0-9_./-]\+$/
+      syntax match JJFileRenamed /R [a-zA-Z0-9_./-]\+$/
+      syntax match JJFileCopied /C [a-zA-Z0-9_./-]\+$/
     ]])
   end)
 end
