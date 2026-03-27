@@ -52,15 +52,12 @@ local default_config = {
   help_position = "center",
   keymap = {
     ["?"] = { cmd = "show_help", desc = "Show keybindings help" },
-    j = { cmd = "jump_to_next_change", desc = "Jump to next change" },
-    k = { cmd = "jump_to_prev_change", desc = "Jump to previous change" },
     ["@"] = { cmd = "jump_to_current_change", desc = "Jump to the currently edited change" },
     q = { cmd = "quit", desc = "Close window" },
     R = { cmd = "refresh", desc = "Refresh log view" },
     ["<CR>"] = { cmd = "open_diff", desc = "Open diff viewer" },
-    v = { cmd = "switch_diff_viewer", desc = "Switch diff viewer preset" },
     G = { cmd = "show_global_flags", desc = "Toggle global flags", nowait = true },
-    l = { cmd = "set_revset", desc = "Set custom revset" },
+    L = { cmd = "set_revset", desc = "Set custom revset" },
     d = { cmd = "describe", desc = "Edit description" },
     n = { cmd = "new_change", desc = "Create new change" },
     N = { cmd = "new_change_menu", desc = "New change options menu" },
@@ -213,7 +210,7 @@ end
 local function select_change(opts, cb)
   vim.notify(
     (opts.prompt or "Select destination change")
-    .. " (navigate with j/k, <CR> to select, <Esc> to cancel)",
+    .. " (<CR> to select, <Esc> to cancel)",
     vim.log.levels.INFO
   )
 
