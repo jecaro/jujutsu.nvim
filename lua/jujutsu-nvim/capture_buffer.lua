@@ -22,15 +22,8 @@ M.open = function(opts)
   vim.bo[buf].swapfile = false
   vim.bo[buf].filetype = opts.filetype or 'text'
 
-  -- Set content
+  -- Set content (just the description, like jj describe in shell)
   local lines = vim.split(opts.content or "", "\n")
-  if opts.extra_help_text then
-    table.insert(lines, 1, opts.extra_help_text)
-  end
-  vim.list_extend(lines, {
-    "JJ: <C-c><C-c> - confirm",
-    "JJ: <C-c><C-k> - abort"
-  })
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modified = false
 
@@ -41,31 +34,27 @@ M.open = function(opts)
   vim.api.nvim_win_set_height(win, math.floor(vim.o.lines * 0.4))
   vim.api.nvim_win_set_cursor(win, { 1, 0 })
 
-  -- Extract user content from buffer (filter JJ: lines, trim empty lines)
+  -- Extract user content from buffer (filter JJ: lines like jj does)
   local function get_user_content()
-    local content = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local all_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
     -- Filter out lines starting with "JJ:"
-    local filtered_lines = u.remove(content, function(x) return x:match("^JJ:") end)
+    local filtered = {}
+    for _, line in ipairs(all_lines) do
+      if not line:match("^JJ:") then
+        table.insert(filtered, line)
+      end
+    end
     -- Trim leading and trailing empty lines (matches jj's trim_matches('\n') behavior)
-    while #filtered_lines > 0 and filtered_lines[1]:match("^%s*$") do
-      table.remove(filtered_lines, 1)
+    while #filtered > 0 and filtered[1]:match("^%s*$") do
+      table.remove(filtered, 1)
     end
-    while #filtered_lines > 0 and filtered_lines[#filtered_lines]:match("^%s*$") do
-      table.remove(filtered_lines)
+    while #filtered > 0 and filtered[#filtered]:match("^%s*$") do
+      table.remove(filtered)
     end
-    return table.concat(filtered_lines, "\n")
+    return table.concat(filtered, "\n")
   end
 
-  -- Submit and abort handlers
-  local function submit()
-    vim.cmd.stopinsert()
-    local user_content = get_user_content()
-    vim.api.nvim_buf_delete(buf, { force = true })
-    if opts.on_submit then
-      opts.on_submit(user_content)
-    end
-  end
-
+  -- :w saves the description
   vim.api.nvim_create_autocmd('BufWriteCmd', {
     callback = function()
       opts.on_submit(get_user_content())
@@ -74,42 +63,19 @@ M.open = function(opts)
     buffer = buf,
   })
 
+  -- Closing without saving triggers abort
   vim.api.nvim_create_autocmd('BufUnload', {
     callback = function()
       if vim.bo[buf].modified then
-        -- For some reason, without the schedule the color scheme of the
-        -- notification gets messed up.
         vim.schedule(function()
           if opts.on_abort then
             opts.on_abort()
-          else
-            vim.notify("Aborted", vim.log.levels.INFO)
           end
         end)
       end
     end,
     buffer = buf,
   })
-
-  local function abort()
-    -- Makes it so the cursor remains at top after edit buffer close
-    vim.cmd.stopinsert()
-    vim.api.nvim_buf_delete(buf, { force = true })
-  end
-
-  -- Setup keymaps
-  local keymap_opts = function(desc)
-    return { desc = desc, buffer = buf, silent = true }
-  end
-
-  vim.keymap.set("n", "<C-c><C-k>", abort, keymap_opts("JJ: Abort"))
-  vim.keymap.set("i", "<C-c><C-k>", abort, keymap_opts("JJ: Abort"))
-  vim.keymap.set("n", "<C-c><C-c>", submit, keymap_opts("JJ: Submit"))
-  vim.keymap.set("i", "<C-c><C-c>", submit, keymap_opts("JJ: Submit"))
-
-  if opts.on_ready then
-    opts.on_ready(win, buf)
-  end
 end
 
 return M

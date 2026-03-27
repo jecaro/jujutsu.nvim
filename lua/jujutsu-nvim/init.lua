@@ -342,22 +342,31 @@ local function new_change_menu()
 end
 
 local function describe(change_id)
-  jj.get_changes_by_ids({ change_id }, function(changes)
-    local description = changes[1].description
-    capture_buffer.open({
-      content = description,
-      filetype = 'jjdescription',
-      on_submit = function(new_description)
-        jj.describe(change_id, new_description, M.state.global_flags, function()
-          vim.notify("Description updated for " .. change_id, vim.log.levels.INFO)
-          M.log()
-        end)
-      end,
-      on_abort = function()
-        vim.notify("Aborted description edit", vim.log.levels.INFO)
-      end
-    })
-  end)
+  -- Get the full describe template from jj (includes change ID, file list, etc.)
+  vim.system(
+    { "jj", "describe", "-r", change_id },
+    { text = true, env = { EDITOR = "cat" } },
+    function(result)
+      vim.schedule(function()
+        local content = result.stdout or ""
+        -- Remove trailing "Nothing changed." line if present
+        content = content:gsub("\nNothing changed%.%s*$", "")
+        capture_buffer.open({
+          content = content,
+          filetype = 'jjdescription',
+          on_submit = function(new_description)
+            jj.describe(change_id, new_description, M.state.global_flags, function()
+              vim.notify("Description updated for " .. change_id, vim.log.levels.INFO)
+              M.log()
+            end)
+          end,
+          on_abort = function()
+            vim.notify("Aborted description edit", vim.log.levels.INFO)
+          end
+        })
+      end)
+    end
+  )
 end
 
 local function abandon_changes()
