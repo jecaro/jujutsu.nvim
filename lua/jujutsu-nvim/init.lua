@@ -1370,7 +1370,7 @@ local actions = {
     vim.notify("Cleared all selections", vim.log.levels.INFO)
   end,
   ["toggle_files"] = function()
-    terminal_buffer.toggle_fold(M.state.log_buffer)
+    terminal_buffer.toggle_fold(M.state.log_buffer, update_selection_display)
   end,
   ["diff_file_split"] = diff_file_split,
 }

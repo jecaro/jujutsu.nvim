@@ -109,7 +109,8 @@ end
 
 --- Toggle fold for commit at cursor
 --- @param buf number
-M.toggle_fold = function(buf)
+--- @param on_redraw fun()? Optional callback called after buffer is redrawn
+M.toggle_fold = function(buf, on_redraw)
   local state = buffer_state[buf]
   if not state then return end
 
@@ -134,6 +135,11 @@ M.toggle_fold = function(buf)
 
   -- Re-apply highlights
   apply_highlights(buf)
+
+  -- Call redraw callback if provided (e.g., to refresh selection display)
+  if on_redraw then
+    on_redraw()
+  end
 end
 
 --- Setup highlight groups for jj log output
