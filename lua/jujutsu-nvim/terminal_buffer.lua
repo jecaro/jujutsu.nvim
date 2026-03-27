@@ -252,10 +252,10 @@ M.run_command_in_terminal_window = function(args, opts)
     if opts.split_mode == "vsplit" then
       split_cmd = "vsplit"
     elseif opts.split_mode == "hsplit" then
-      split_cmd = "botright split"
+      split_cmd = "topleft split"
     else
-      -- Default to hsplit for backward compatibility
-      split_cmd = "botright split"
+      -- Default to hsplit
+      split_cmd = "topleft split"
     end
 
     -- Create split and buffer

@@ -347,11 +347,6 @@ local function describe(change_id)
     capture_buffer.open({
       content = description,
       filetype = 'jjdescription',
-      on_ready = function(_, _)
-        if u.is_blank(description) then
-          vim.cmd.startinsert()
-        end
-      end,
       on_submit = function(new_description)
         jj.describe(change_id, new_description, M.state.global_flags, function()
           vim.notify("Description updated for " .. change_id, vim.log.levels.INFO)

@@ -35,7 +35,7 @@ M.open = function(opts)
   vim.bo[buf].modified = false
 
   -- Open buffer in a split
-  vim.cmd('botright split')
+  vim.cmd('topleft split')
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, buf)
   vim.api.nvim_win_set_height(win, math.floor(vim.o.lines * 0.4))
