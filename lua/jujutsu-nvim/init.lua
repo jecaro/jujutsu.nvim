@@ -25,6 +25,7 @@ local default_state = {
   },
   diff_win_left = nil,   -- Parent version window for dv
   diff_win_right = nil,  -- Current file window for dv
+  file_win = nil,        -- File window for open_file_below
 }
 
 M.state = default_state
@@ -58,7 +59,7 @@ local default_config = {
     ["@"] = { cmd = "jump_to_current_change", desc = "Jump to the currently edited change" },
     q = { cmd = "quit", desc = "Close window" },
     R = { cmd = "refresh", desc = "Refresh log view" },
-    ["<CR>"] = { cmd = "open_diff", desc = "Open diff viewer" },
+    ["<CR>"] = { cmd = "open_file_or_diff", desc = "Open file or diff viewer" },
     G = { cmd = "show_global_flags", desc = "Toggle global flags", nowait = true },
     L = { cmd = "set_revset", desc = "Set custom revset" },
     D = { cmd = "describe", desc = "Edit description" },
@@ -922,6 +923,94 @@ end
 --- Open a diff split view for the file at cursor
 --- Layout: JJ buffer (top), parent version (bottom-left), commit version (bottom-right)
 --- For working copy: right side is the actual editable file
+--- Open the file at cursor in a split below
+--- For working copy: opens the actual file
+--- For historical commits: shows read-only view from that revision
+local function open_file_below()
+  local line = vim.api.nvim_get_current_line()
+  local filepath, status = extract_file_path(line)
+
+  if not filepath then
+    vim.notify("Cursor not on a file line", vim.log.levels.WARN)
+    return
+  end
+
+  if status == "D" then
+    vim.notify("Cannot open deleted file", vim.log.levels.WARN)
+    return
+  end
+
+  -- Get the change_id for this line
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+  local current_buf = vim.api.nvim_get_current_buf()
+  local change_id = terminal_buffer.get_change_id_at_line(current_buf, cursor_line)
+  if not change_id then
+    vim.notify("Could not determine change for this file", vim.log.levels.WARN)
+    return
+  end
+
+  local is_working_copy = is_working_copy_commit(current_buf, cursor_line)
+
+  -- Check if we can reuse existing file window
+  local win
+  if M.state.file_win and vim.api.nvim_win_is_valid(M.state.file_win) then
+    win = M.state.file_win
+    vim.api.nvim_set_current_win(win)
+  else
+    -- Create a split below
+    vim.cmd("belowright split")
+    win = vim.api.nvim_get_current_win()
+    M.state.file_win = win
+  end
+
+  if is_working_copy then
+    -- Working copy: open actual file (editable)
+    vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+  else
+    -- Historical commit: show file from that revision (read-only)
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(win, buf)
+    vim.bo[buf].buftype = 'nofile'
+    vim.bo[buf].bufhidden = 'wipe'
+    vim.bo[buf].swapfile = false
+    pcall(vim.api.nvim_buf_set_name, buf, string.format("[JJ %s] %s", change_id, filepath))
+
+    local ft = vim.filetype.match({ filename = filepath })
+    if ft then vim.bo[buf].filetype = ft end
+
+    -- Fetch content from jj
+    vim.system(
+      { "jj", "file", "show", "-r", change_id, filepath },
+      { text = true },
+      function(result)
+        vim.schedule(function()
+          if not vim.api.nvim_buf_is_valid(buf) then return end
+          if result.code == 0 then
+            local lines = vim.split(result.stdout, "\n", { trimempty = false })
+            if lines[#lines] == "" then table.remove(lines) end
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+          else
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "Error loading file content" })
+          end
+          vim.bo[buf].modifiable = false
+        end)
+      end
+    )
+  end
+end
+
+--- Open file below if on a file line, otherwise open diff for the change
+local function open_file_or_diff()
+  local line = vim.api.nvim_get_current_line()
+  local filepath, status = extract_file_path(line)
+
+  if filepath and status ~= "D" then
+    open_file_below()
+  else
+    open_diff_for_changes()
+  end
+end
+
 local function diff_file_split()
   local line = vim.api.nvim_get_current_line()
   local filepath, status = extract_file_path(line)
@@ -1347,6 +1436,8 @@ local actions = {
   ["switch_diff_viewer"] = switch_diff_viewer,
   ["show_global_flags"] = show_global_flags_menu,
   ["open_diff"] = open_diff_for_changes,
+  ["open_file"] = open_file_below,
+  ["open_file_or_diff"] = open_file_or_diff,
   ["describe"] = function() M.with_change_at_cursor(describe) end,
   ["new_change"] = new_change,
   ["new_change_menu"] = new_change_menu,
