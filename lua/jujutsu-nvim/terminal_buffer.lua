@@ -388,4 +388,14 @@ M.run_command_in_terminal_window = function(args, opts)
   })
 end
 
+--- Get the change_id for a given line number in the buffer
+--- @param buf number Buffer handle
+--- @param line_num number Line number (1-indexed)
+--- @return string? change_id
+M.get_change_id_at_line = function(buf, line_num)
+  local state = buffer_state[buf]
+  if not state then return nil end
+  return state.line_to_commit[line_num]
+end
+
 return M

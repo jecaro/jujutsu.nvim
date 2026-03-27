@@ -11,6 +11,7 @@ local capture_buffer = require("jujutsu-nvim.capture_buffer")
 local jj = require("jujutsu-nvim.jujutsu")
 local u = require("jujutsu-nvim.utils")
 local help_window = require("jujutsu-nvim.help_window")
+local terminal_buffer = require("jujutsu-nvim.terminal_buffer")
 
 local M = {}
 
@@ -22,6 +23,8 @@ local default_state = {
   global_flags = {
     ignore_immutable = false,
   },
+  diff_win_left = nil,   -- Parent version window for dv
+  diff_win_right = nil,  -- Current file window for dv
 }
 
 M.state = default_state
@@ -58,7 +61,7 @@ local default_config = {
     ["<CR>"] = { cmd = "open_diff", desc = "Open diff viewer" },
     G = { cmd = "show_global_flags", desc = "Toggle global flags", nowait = true },
     L = { cmd = "set_revset", desc = "Set custom revset" },
-    d = { cmd = "describe", desc = "Edit description" },
+    D = { cmd = "describe", desc = "Edit description" },
     n = { cmd = "new_change", desc = "Create new change" },
     N = { cmd = "new_change_menu", desc = "New change options menu" },
     a = { cmd = "abandon_changes", desc = "Abandon change(s)" },
@@ -78,6 +81,7 @@ local default_config = {
     m = { cmd = "toggle_change", desc = "Toggle selection" },
     c = { cmd = "clear_selections", desc = "Clear all selections" },
     ["="] = { cmd = "toggle_files", desc = "Toggle file list" },
+    dv = { cmd = "diff_file_split", desc = "Diff file in vertical split" },
   }
 }
 
@@ -850,6 +854,244 @@ local function open_diff_for_changes()
   end
 end
 
+--- Extract file path from a file line in the JJ log buffer
+--- @param line string The line content
+--- @return string? filepath, string? status (M/A/D/R/C)
+local function extract_file_path(line)
+  -- File lines can start with graph chars (│├─╯╰etc), ~ or just spaces
+  local after_graph = line:match("^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+(.*)$")
+  if not after_graph then return nil, nil end
+  local status, filepath = after_graph:match("^([MADRC])%s+(.+)$")
+  return filepath, status
+end
+
+--- Check if the commit at cursor line is the working copy (has @ marker)
+--- @param buf number Buffer handle
+--- @param line_num number Line number to check
+--- @return boolean
+local function is_working_copy_commit(buf, line_num)
+  -- Walk backwards to find the commit header line for this file
+  for i = line_num, 1, -1 do
+    local line = vim.api.nvim_buf_get_lines(buf, i - 1, i, false)[1]
+    if line and line:match("[@○◆◉]%s+%a+") then
+      -- Found a commit header, check if it has @
+      return line:match("^[│├─╯╰┌└┐┘╮╭╋┼┬┴ ]*@") ~= nil
+    end
+  end
+  return false
+end
+
+--- Helper to create a scratch buffer with file content from a revision
+--- @param revision string The jj revision
+--- @param filepath string The file path
+--- @param buf_name string Name for the buffer
+--- @param callback fun(buf: number) Called with the buffer after content is loaded
+local function create_revision_buffer(revision, filepath, buf_name, callback)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].buftype = 'nofile'
+  vim.bo[buf].bufhidden = 'wipe'
+  vim.bo[buf].swapfile = false
+  pcall(vim.api.nvim_buf_set_name, buf, buf_name)
+
+  local ft = vim.filetype.match({ filename = filepath })
+  if ft then vim.bo[buf].filetype = ft end
+
+  vim.system(
+    { "jj", "file", "show", "-r", revision, filepath },
+    { text = true },
+    function(result)
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(buf) then return end
+
+        if result.code == 0 then
+          local lines = vim.split(result.stdout, "\n", { trimempty = false })
+          if lines[#lines] == "" then table.remove(lines) end
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+        else
+          vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
+        end
+        vim.bo[buf].modifiable = false
+        callback(buf)
+      end)
+    end
+  )
+
+  return buf
+end
+
+--- Open a diff split view for the file at cursor
+--- Layout: JJ buffer (top), parent version (bottom-left), commit version (bottom-right)
+--- For working copy: right side is the actual editable file
+local function diff_file_split()
+  local line = vim.api.nvim_get_current_line()
+  local filepath, status = extract_file_path(line)
+
+  if not filepath then
+    vim.notify("Cursor not on a file line", vim.log.levels.WARN)
+    return
+  end
+
+  -- Get the change_id for this line
+  local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+  local current_buf = vim.api.nvim_get_current_buf()
+  local change_id = terminal_buffer.get_change_id_at_line(current_buf, cursor_line)
+  if not change_id then
+    vim.notify("Could not determine change for this file", vim.log.levels.WARN)
+    return
+  end
+
+  local is_working_copy = is_working_copy_commit(current_buf, cursor_line)
+  local parent_rev = change_id .. "-"
+
+  -- Check if we can reuse existing diff windows
+  local reuse_layout = M.state.diff_win_left
+    and vim.api.nvim_win_is_valid(M.state.diff_win_left)
+    and M.state.diff_win_right
+    and vim.api.nvim_win_is_valid(M.state.diff_win_right)
+
+  local diff_win_left, diff_win_right
+
+  if reuse_layout then
+    diff_win_left = M.state.diff_win_left
+    diff_win_right = M.state.diff_win_right
+
+    -- Turn off diff mode in both windows
+    vim.api.nvim_win_call(diff_win_left, function() vim.cmd("diffoff") end)
+    vim.api.nvim_win_call(diff_win_right, function() vim.cmd("diffoff") end)
+
+    -- Clean up old left buffer
+    local old_left_buf = vim.api.nvim_win_get_buf(diff_win_left)
+    local new_left_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(diff_win_left, new_left_buf)
+    if vim.api.nvim_buf_is_valid(old_left_buf) and vim.bo[old_left_buf].buftype == 'nofile' then
+      -- Buffer may already be wiped due to bufhidden=wipe
+      pcall(vim.api.nvim_buf_delete, old_left_buf, { force = true })
+    end
+
+    -- Clean up old right buffer if it was a scratch buffer
+    local old_right_buf = vim.api.nvim_win_get_buf(diff_win_right)
+    if vim.api.nvim_buf_is_valid(old_right_buf) and vim.bo[old_right_buf].buftype == 'nofile' then
+      local new_right_buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_win_set_buf(diff_win_right, new_right_buf)
+      -- Buffer may already be wiped due to bufhidden=wipe
+      pcall(vim.api.nvim_buf_delete, old_right_buf, { force = true })
+    end
+  else
+    -- Create new layout: horizontal split below current (JJ) window
+    vim.cmd("belowright split")
+    diff_win_left = vim.api.nvim_get_current_win()
+
+    -- Vertical split for right side
+    vim.cmd("vsplit")
+    diff_win_right = vim.api.nvim_get_current_win()
+
+    -- Store window references
+    M.state.diff_win_left = diff_win_left
+    M.state.diff_win_right = diff_win_right
+  end
+
+  local ft = vim.filetype.match({ filename = filepath })
+
+  -- Setup left buffer (parent revision)
+  local left_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(diff_win_left, left_buf)
+  vim.bo[left_buf].buftype = 'nofile'
+  vim.bo[left_buf].bufhidden = 'wipe'
+  vim.bo[left_buf].swapfile = false
+  pcall(vim.api.nvim_buf_set_name, left_buf, string.format("[JJ %s] %s", parent_rev, filepath))
+  if ft then vim.bo[left_buf].filetype = ft end
+
+  -- Setup right side
+  vim.api.nvim_set_current_win(diff_win_right)
+
+  local right_buf
+  if is_working_copy then
+    -- Working copy: open actual file (editable)
+    if status == "D" then
+      right_buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_win_set_buf(diff_win_right, right_buf)
+      vim.bo[right_buf].buftype = 'nofile'
+      vim.bo[right_buf].bufhidden = 'wipe'
+      pcall(vim.api.nvim_buf_set_name, right_buf, filepath .. " (deleted)")
+      if ft then vim.bo[right_buf].filetype = ft end
+    else
+      vim.cmd("edit " .. vim.fn.fnameescape(filepath))
+      right_buf = vim.api.nvim_get_current_buf()
+    end
+  else
+    -- Historical commit: show file from that revision (read-only)
+    right_buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_win_set_buf(diff_win_right, right_buf)
+    vim.bo[right_buf].buftype = 'nofile'
+    vim.bo[right_buf].bufhidden = 'wipe'
+    vim.bo[right_buf].swapfile = false
+    pcall(vim.api.nvim_buf_set_name, right_buf, string.format("[JJ %s] %s", change_id, filepath))
+    if ft then vim.bo[right_buf].filetype = ft end
+  end
+
+  -- Fetch content for both buffers and enable diff mode
+  local left_ready, right_ready = false, false
+
+  local function enable_diff_if_ready()
+    if left_ready and right_ready then
+      if vim.api.nvim_win_is_valid(diff_win_left) then
+        vim.api.nvim_win_call(diff_win_left, function() vim.cmd("diffthis") end)
+      end
+      if vim.api.nvim_win_is_valid(diff_win_right) then
+        vim.api.nvim_win_call(diff_win_right, function() vim.cmd("diffthis") end)
+        vim.api.nvim_set_current_win(diff_win_right)
+      end
+    end
+  end
+
+  -- Fetch left (parent) content
+  vim.system(
+    { "jj", "file", "show", "-r", parent_rev, filepath },
+    { text = true },
+    function(result)
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(left_buf) then return end
+        if result.code == 0 then
+          local lines = vim.split(result.stdout, "\n", { trimempty = false })
+          if lines[#lines] == "" then table.remove(lines) end
+          vim.api.nvim_buf_set_lines(left_buf, 0, -1, false, lines)
+        else
+          vim.api.nvim_buf_set_lines(left_buf, 0, -1, false, {})
+        end
+        vim.bo[left_buf].modifiable = false
+        left_ready = true
+        enable_diff_if_ready()
+      end)
+    end
+  )
+
+  -- Fetch right content (only for non-working-copy)
+  if is_working_copy then
+    right_ready = true
+    enable_diff_if_ready()
+  else
+    vim.system(
+      { "jj", "file", "show", "-r", change_id, filepath },
+      { text = true },
+      function(result)
+        vim.schedule(function()
+          if not vim.api.nvim_buf_is_valid(right_buf) then return end
+          if result.code == 0 then
+            local lines = vim.split(result.stdout, "\n", { trimempty = false })
+            if lines[#lines] == "" then table.remove(lines) end
+            vim.api.nvim_buf_set_lines(right_buf, 0, -1, false, lines)
+          else
+            vim.api.nvim_buf_set_lines(right_buf, 0, -1, false, {})
+          end
+          vim.bo[right_buf].modifiable = false
+          right_ready = true
+          enable_diff_if_ready()
+        end)
+      end
+    )
+  end
+end
+
 --------------------------------------------------------------------------------
 -- Squash operations
 --------------------------------------------------------------------------------
@@ -1024,8 +1266,6 @@ end
 -- Log view and keymaps
 --------------------------------------------------------------------------------
 
-local terminal_buffer = require("jujutsu-nvim.terminal_buffer")
-
 -- Cleanup jj window and buffer
 local function close_jj_window()
   -- Close window first, which will trigger buffer cleanup if bufhidden=wipe
@@ -1132,6 +1372,7 @@ local actions = {
   ["toggle_files"] = function()
     terminal_buffer.toggle_fold(M.state.log_buffer)
   end,
+  ["diff_file_split"] = diff_file_split,
 }
 
 --- Setup jujutsu.nvim with user configuration
