@@ -110,8 +110,9 @@ M.extract_change_id =  function(line)
   end
 
   -- Pattern 3: For lines with branch names, extract the first word
+  -- Anchored to start of line to avoid matching 'x' in description text like "Fix"
   if not change_id then
-    change_id = clean_line:match "[│├└─╮╯]*%s*[◉○◆@x]+%s+(%w+)"
+    change_id = clean_line:match "^[│├└─╮╯ ]*[◉○◆@x]+%s+(%w+)"
   end
 
   return change_id
