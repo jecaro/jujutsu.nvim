@@ -160,56 +160,53 @@ local function setup_highlights()
   hl(0, "JJFileDeleted", { fg = "NvimLightRed" })                     -- D = deleted
 end
 
---- Apply syntax highlighting to the buffer
+--- Apply syntax highlighting to the buffer using vim syntax (buffer-local)
 --- @param buf number Buffer handle
 function apply_highlights(buf)
   setup_highlights()
 
-  -- Clear any existing matches
-  vim.fn.clearmatches()
+  vim.api.nvim_buf_call(buf, function()
+    vim.cmd([[
+      syntax clear
 
-  -- Apply matches to the buffer window
-  local win = vim.fn.bufwinid(buf)
-  if win == -1 then return end
+      " Graph characters
+      syntax match JJGraph /[│├─╯╰┌└┐┘╮╭╋┼┬┴~]/
 
-  -- Graph characters (│├─╯╰┌└┐┘╮╭)
-  vim.fn.matchadd("JJGraph", "[│├─╯╰┌└┐┘╮╭╋┼┬┴~]", 10, -1, { window = win })
+      " Email addresses (high priority to avoid @ conflict)
+      syntax match JJEmail /[a-zA-Z0-9._%+-]\+@[a-zA-Z0-9.-]\+\.[a-zA-Z]\{2,}/
 
-  -- Email addresses (high priority to avoid @ conflict)
-  vim.fn.matchadd("JJEmail", "\\v[a-zA-Z0-9._%+-]+\\@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", 15, -1, { window = win })
+      " Current change marker @ (only at start of line or after graph chars)
+      syntax match JJChangeMarkerCurrent /^[│├─╯╰┌└┐┘╮╭╋┼┬┴ ]*\zs@/
 
-  -- Current change marker @ (only at start of line or after graph chars)
-  vim.fn.matchadd("JJChangeMarkerCurrent", "\\v^[│├─╯╰┌└┐┘╮╭╋┼┬┴ ]*\\zs\\@", 11, -1, { window = win })
+      " Change markers ○◆◉
+      syntax match JJChangeMarker /[○◆◉]/
 
-  -- Change markers ○◆◉
-  vim.fn.matchadd("JJChangeMarker", "[○◆◉]", 11, -1, { window = win })
+      " Change ID (8 lowercase letters after marker)
+      syntax match JJChangeId /\([○◆◉@]\s\+\)\@<=[a-z]\{8}/
 
-  -- Change ID (8 lowercase letters after marker)
-  vim.fn.matchadd("JJChangeId", "\\v([○◆◉@]\\s+)@<=[a-z]{8}", 12, -1, { window = win })
+      " Date/time (YYYY-MM-DD HH:MM:SS)
+      syntax match JJDate /\d\{4}-\d\{2}-\d\{2} \d\{2}:\d\{2}:\d\{2}/
 
-  -- Date/time (YYYY-MM-DD HH:MM:SS)
-  vim.fn.matchadd("JJDate", "\\v\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}", 10, -1, { window = win })
+      " Commit hash (8 hex chars at end of line)
+      syntax match JJCommitHash /[a-f0-9]\{8}$/
 
-  -- Commit hash (8 hex chars at end of line) - higher priority than bookmarks
-  vim.fn.matchadd("JJCommitHash", "\\v[a-f0-9]{8}$", 15, -1, { window = win })
+      " Git refs (git_head())
+      syntax match JJGitRef /git_head()/
 
-  -- Git refs (git_head()) - green
-  vim.fn.matchadd("JJGitRef", "\\vgit_head\\(\\)", 10, -1, { window = win })
+      " Bookmarks and branch names (after timestamp, contains non-hex or longer than 8)
+      syntax match JJBookmark /\(\d\{2}:\d\{2}:\d\{2}\s\+\)\@<=[a-zA-Z][a-zA-Z0-9/_-]*[g-zG-Z/_-][a-zA-Z0-9/_-]*/
+      syntax match JJBookmark /\(\d\{2}:\d\{2}:\d\{2}\s\+\)\@<=[a-zA-Z][a-zA-Z0-9/_-]\{8,}/
 
-  -- Bookmarks and branch names - magenta (must contain at least one non-hex char or be longer than 8)
-  vim.fn.matchadd("JJBookmark", "\\v(\\d{2}:\\d{2}:\\d{2}\\s+)@<=[a-zA-Z][a-zA-Z0-9/_-]*[g-zG-Z/_-][a-zA-Z0-9/_-]*", 10, -1, { window = win })
-  vim.fn.matchadd("JJBookmark", "\\v(\\d{2}:\\d{2}:\\d{2}\\s+)@<=[a-zA-Z][a-zA-Z0-9/_-]{8,}", 10, -1, { window = win })
+      " (empty) and (no description set) markers
+      syntax match JJEmpty /(empty)/
+      syntax match JJEmpty /(no description set)/
 
-  -- (empty) marker
-  vim.fn.matchadd("JJEmpty", "(empty)", 10, -1, { window = win })
-
-  -- (no description set)
-  vim.fn.matchadd("JJEmpty", "(no description set)", 10, -1, { window = win })
-
-  -- File change indicators
-  vim.fn.matchadd("JJFileModified", "\\v^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+\\zsM\\ze\\s", 12, -1, { window = win })
-  vim.fn.matchadd("JJFileAdded", "\\v^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+\\zsA\\ze\\s", 12, -1, { window = win })
-  vim.fn.matchadd("JJFileDeleted", "\\v^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+\\zsD\\ze\\s", 12, -1, { window = win })
+      " File change indicators
+      syntax match JJFileModified /^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]\+\zsM\ze\s/
+      syntax match JJFileAdded /^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]\+\zsA\ze\s/
+      syntax match JJFileDeleted /^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]\+\zsD\ze\s/
+    ]])
+  end)
 end
 
 --- @class TerminalWindowOpts
