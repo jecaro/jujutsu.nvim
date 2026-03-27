@@ -22,14 +22,12 @@ end
 --- @param line string
 --- @return boolean
 local function is_file_line(line)
-  -- File lines look like: "│  M path/to/file" or "│  A path" etc
-  -- They have graph chars, then spaces, then a single letter (M/A/D/R/C), then space, then a file path
+  -- File lines look like: "│  M path/to/file" or "│ │    M README.md" (with branches)
+  -- They have graph chars and spaces, then a single letter (M/A/D/R/C), then space, then a file path
   -- The file path typically contains / or . (like lua/foo.lua or README.md)
   -- We need to distinguish from description lines like "│  (no description set)"
-  local after_graph = line:match("^[│├─╯╰┌└┐┘╮╭╋┼┬┴~]+%s+(.*)$")
-  if not after_graph then return false end
-  -- Check if it starts with a single status letter followed by space and a path-like string
-  return after_graph:match("^[MADRC]%s+[%w_./%-]+$") ~= nil
+  -- Match: any combo of graph chars and spaces, then M/A/D/R/C + space + filepath at end
+  return line:match("[MADRC] [%w_./%-]+$") ~= nil
 end
 
 --- Check if a line is the working copy (has @ marker)
