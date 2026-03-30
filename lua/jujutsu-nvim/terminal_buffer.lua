@@ -3,11 +3,100 @@ local M = {}
 -- Buffer-local fold state: maps buffer -> { expanded_commits = {change_id = true}, commit_data = {...} }
 local buffer_state = {}
 
+-- Namespace for extmarks
+local ns_id = vim.api.nvim_create_namespace("jujutsu_prefix_highlights")
+
 --- Strip ANSI escape codes from a string
 --- @param str string
 --- @return string
 local function strip_ansi(str)
   return str:gsub("\27%[[0-9;]*m", "")
+end
+
+--- Parse ANSI codes to extract prefix lengths for change IDs and commit hashes
+--- jj uses different colors for working copy vs other commits:
+---   Working copy: 38;5;13 (bright magenta) for change_id, 38;5;12 (bright blue) for commit_id
+---   Other commits: 38;5;5 (magenta) for change_id, 38;5;4 (blue) for commit_id
+--- Suffix is dim gray (38;5;8) for all commits
+--- Sequence for working copy: prefix_color -> suffix_color (38;5;8) -> reset (39m)
+--- Sequence for others: prefix_color -> reset (0m) -> suffix_color (38;5;8) -> reset (39m)
+--- @param line string Raw line with ANSI codes
+--- @return string stripped_line Line without ANSI codes
+--- @return table prefix_info Array of {col, prefix_len, total_len} for IDs found
+local function parse_ansi_prefixes(line)
+  local prefix_info = {}
+  local stripped = ""
+  local col = 0  -- 0-indexed column in stripped string
+
+  -- Track current state
+  local current_id_start = nil   -- Column where current ID started
+  local current_prefix_len = nil -- Length of the unique prefix (set when prefix ends)
+  local in_suffix = false        -- Whether we're currently reading the suffix
+
+  local i = 1
+  while i <= #line do
+    -- Check for ANSI escape sequence
+    if line:sub(i, i) == "\27" then
+      local seq_end = line:find("m", i)
+      if seq_end then
+        local seq = line:sub(i, seq_end)
+        -- Check for ID prefix colors:
+        -- magenta (change_id): 38;5;13 (bright) or 38;5;5 (normal)
+        -- blue (commit_id): 38;5;12 (bright) or 38;5;4 (normal)
+        if seq:match("38;5;13") or seq:match("38;5;12") or
+           seq:match("38;5;5[m;]") or seq:match("38;5;5$") or
+           seq:match("38;5;4[m;]") or seq:match("38;5;4$") then
+          -- Starting a new ID prefix
+          current_id_start = col
+          current_prefix_len = nil
+          in_suffix = false
+        -- Check for dim gray (suffix color): 38;5;8
+        elseif seq:match("38;5;8") then
+          -- If we have an ID start but no prefix length yet, record it now
+          if current_id_start ~= nil and current_prefix_len == nil then
+            current_prefix_len = col - current_id_start
+          end
+          -- Now we're in the suffix
+          in_suffix = true
+        -- Check for reset: 39m
+        elseif seq:match("%[39m") then
+          -- This ends the current ID (either suffix or full ID)
+          if current_id_start ~= nil then
+            local total_len = col - current_id_start
+            -- If we never got a prefix_len, the whole thing is the prefix
+            local prefix_len = current_prefix_len or total_len
+            if total_len > 0 and prefix_len > 0 then
+              prefix_info[#prefix_info + 1] = {
+                col = current_id_start,
+                prefix_len = prefix_len,
+                total_len = total_len,
+              }
+            end
+            current_id_start = nil
+            current_prefix_len = nil
+            in_suffix = false
+          end
+        -- Check for full reset: 0m (used between prefix and suffix in non-working-copy)
+        elseif seq:match("%[0m") then
+          -- If we're in a prefix, record the prefix length (suffix comes next)
+          if current_id_start ~= nil and current_prefix_len == nil and not in_suffix then
+            current_prefix_len = col - current_id_start
+          end
+          -- Don't reset current_id_start - we're still tracking this ID
+        end
+        i = seq_end + 1
+      else
+        i = i + 1
+      end
+    else
+      -- Regular character
+      stripped = stripped .. line:sub(i, i)
+      col = col + 1
+      i = i + 1
+    end
+  end
+
+  return stripped, prefix_info
 end
 
 --- Check if a line is a commit header (contains @○◆◉ followed by change_id)
@@ -38,10 +127,12 @@ end
 
 --- Parse jj log output into structured commit data
 --- @param lines string[]
---- @return table[] commits Array of {header_idx, description_lines, file_lines, is_working_copy}
-local function parse_commits(lines)
+--- @param line_prefix_info table? Optional mapping of line index to prefix info
+--- @return table[] commits Array of {header_idx, description_lines, file_lines, is_working_copy, header_prefix_info}
+local function parse_commits(lines, line_prefix_info)
   local commits = {}
   local current_commit = nil
+  line_prefix_info = line_prefix_info or {}
 
   for i, line in ipairs(lines) do
     local change_id = get_commit_header_change_id(line)
@@ -54,6 +145,7 @@ local function parse_commits(lines)
         change_id = change_id,
         header_idx = i,
         header_line = line,
+        header_prefix_info = line_prefix_info[i],  -- Attach prefix info for this header
         description_lines = {},
         file_lines = {},
         is_working_copy = is_working_copy(line),
@@ -80,14 +172,19 @@ end
 --- @param expanded_commits table<string, boolean>
 --- @return string[] lines to display
 --- @return table<number, string> line_to_commit maps line number to change_id
+--- @return table<number, table> display_prefix_info maps display line number to prefix info
 local function build_display_lines(commits, expanded_commits)
   local lines = {}
   local line_to_commit = {}
+  local display_prefix_info = {}
 
   for _, commit in ipairs(commits) do
     -- Add header line
     lines[#lines + 1] = commit.header_line
     line_to_commit[#lines] = commit.change_id
+    if commit.header_prefix_info then
+      display_prefix_info[#lines] = commit.header_prefix_info
+    end
 
     -- Add description lines
     for _, desc_line in ipairs(commit.description_lines) do
@@ -104,7 +201,7 @@ local function build_display_lines(commits, expanded_commits)
     end
   end
 
-  return lines, line_to_commit
+  return lines, line_to_commit, display_prefix_info
 end
 
 --- Toggle fold for commit at cursor
@@ -126,8 +223,9 @@ M.toggle_fold = function(buf, on_redraw)
   end
 
   -- Rebuild display
-  local lines, line_to_commit = build_display_lines(state.commits, state.expanded_commits)
+  local lines, line_to_commit, display_prefix_info = build_display_lines(state.commits, state.expanded_commits)
   state.line_to_commit = line_to_commit
+  state.display_prefix_info = display_prefix_info
 
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -149,12 +247,16 @@ local function setup_highlights()
   -- Use explicit colors matching jj defaults, with fallback links for compatibility
   hl(0, "JJChangeMarkerCurrent", { bold = true })                    -- @ symbol (working_copy = bold)
   hl(0, "JJChangeMarker", { fg = "NvimLightCyan" })                   -- ○◆◉ symbols
-  hl(0, "JJChangeId", { fg = "NvimLightMagenta" })                    -- change_id = magenta
+  hl(0, "JJChangeId", { fg = "NvimLightMagenta" })                    -- change_id = magenta (fallback)
+  hl(0, "JJChangeIdPrefix", { fg = "NvimLightMagenta", bold = true }) -- change_id unique prefix
+  hl(0, "JJChangeIdSuffix", { fg = "NvimDarkGrey4" })                 -- change_id rest (dim)
   hl(0, "JJEmail", { fg = "NvimLightYellow" })                        -- author = yellow
   hl(0, "JJDate", { fg = "NvimLightCyan" })                           -- timestamp = cyan
   hl(0, "JJBookmark", { fg = "NvimLightMagenta" })                    -- bookmarks = magenta
   hl(0, "JJGitRef", { fg = "NvimLightGreen" })                        -- git_refs = green
-  hl(0, "JJCommitHash", { fg = "NvimLightBlue" })                     -- commit_id = blue
+  hl(0, "JJCommitHash", { fg = "NvimLightBlue" })                     -- commit_id = blue (fallback)
+  hl(0, "JJCommitHashPrefix", { fg = "NvimLightBlue", bold = true })  -- commit_id unique prefix
+  hl(0, "JJCommitHashSuffix", { fg = "NvimDarkGrey4" })               -- commit_id rest (dim)
   hl(0, "JJEmpty", { fg = "NvimLightGreen" })                         -- empty = green
   hl(0, "JJGraph", { fg = "NvimDarkGrey4" })                          -- separator = bright black
   hl(0, "JJDescription", { link = "Normal" })                         -- description text
@@ -166,6 +268,7 @@ local function setup_highlights()
 end
 
 --- Apply syntax highlighting to the buffer using vim syntax (buffer-local)
+--- Also applies extmarks for change_id and commit_id prefix/suffix highlighting
 --- @param buf number Buffer handle
 function apply_highlights(buf)
   setup_highlights()
@@ -187,13 +290,13 @@ function apply_highlights(buf)
       " Change markers ○◆◉
       syntax match JJChangeMarker /[○◆◉]/
 
-      " Change ID (8 lowercase letters after marker)
-      syntax match JJChangeId /\([○◆◉@]\s\+\)\@<=[a-z]\{8}/
-
       " Date/time (YYYY-MM-DD HH:MM:SS)
       syntax match JJDate /\d\{4}-\d\{2}-\d\{2} \d\{2}:\d\{2}:\d\{2}/
 
-      " Commit hash (8 hex chars at end of line)
+      " Change ID fallback (8 lowercase letters after marker) - may be overridden by extmarks
+      syntax match JJChangeId /\([○◆◉@]\s\+\)\@<=[a-z]\{8}/
+
+      " Commit hash fallback (8 hex chars at end of line) - may be overridden by extmarks
       syntax match JJCommitHash /[a-f0-9]\{8}$/
 
       " Git refs (git_head())
@@ -216,6 +319,46 @@ function apply_highlights(buf)
       syntax match JJFileCopied /C [a-zA-Z0-9_./-]\+$/
     ]])
   end)
+
+  -- Clear previous extmarks
+  vim.api.nvim_buf_clear_namespace(buf, ns_id, 0, -1)
+
+  -- Apply extmarks for prefix/suffix highlighting
+  local state = buffer_state[buf]
+  if state and state.display_prefix_info then
+    for line_num, prefix_infos in pairs(state.display_prefix_info) do
+      for _, info in ipairs(prefix_infos) do
+        local row = line_num - 1  -- 0-indexed for extmarks
+        -- Apply prefix highlight (bright)
+        if info.prefix_len > 0 then
+          -- Determine if this is a change_id or commit_id based on content
+          local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
+          if line then
+            local id_text = line:sub(info.col + 1, info.col + info.total_len)
+            local is_change_id = id_text:match("^[a-z]+$")  -- change_id is lowercase letters
+            local prefix_hl = is_change_id and "JJChangeIdPrefix" or "JJCommitHashPrefix"
+            local suffix_hl = is_change_id and "JJChangeIdSuffix" or "JJCommitHashSuffix"
+
+            -- Apply prefix highlight
+            vim.api.nvim_buf_set_extmark(buf, ns_id, row, info.col, {
+              end_col = info.col + info.prefix_len,
+              hl_group = prefix_hl,
+              priority = 200,  -- Higher priority than syntax
+            })
+
+            -- Apply suffix highlight
+            if info.total_len > info.prefix_len then
+              vim.api.nvim_buf_set_extmark(buf, ns_id, row, info.col + info.prefix_len, {
+                end_col = info.col + info.total_len,
+                hl_group = suffix_hl,
+                priority = 200,
+              })
+            end
+          end
+        end
+      end
+    end
+  end
 end
 
 --- @class TerminalWindowOpts
@@ -303,9 +446,13 @@ M.run_command_in_terminal_window = function(args, opts)
   -- Collect output lines
   local stdout_lines = {}
   local stderr_lines = {}
+  local line_prefix_info = {}  -- Maps line index to prefix info
 
-  -- Run the command asynchronously
-  vim.fn.jobstart(cmd, {
+  -- Run the command asynchronously with color output
+  local cmd_with_color = vim.list_extend(vim.list_slice(cmd, 1, 2), { "--color=always" })
+  cmd_with_color = vim.list_extend(cmd_with_color, vim.list_slice(cmd, 3))
+
+  vim.fn.jobstart(cmd_with_color, {
     stdout_buffered = true,
     stderr_buffered = true,
     on_stdout = function(_, data)
@@ -314,7 +461,11 @@ M.run_command_in_terminal_window = function(args, opts)
           -- Skip the last empty string that jobstart always appends
           if line ~= "" or i < #data then
             if line ~= "" then
-              stdout_lines[#stdout_lines + 1] = strip_ansi(line)
+              local stripped, prefix_info = parse_ansi_prefixes(line)
+              stdout_lines[#stdout_lines + 1] = stripped
+              if #prefix_info > 0 then
+                line_prefix_info[#stdout_lines] = prefix_info
+              end
             end
           end
         end
@@ -346,7 +497,7 @@ M.run_command_in_terminal_window = function(args, opts)
 
           if is_log then
             -- Parse commits and set up fold state
-            local commits = parse_commits(all_lines)
+            local commits = parse_commits(all_lines, line_prefix_info)
             local expanded_commits = {}
 
             -- Preserve expanded state from previous buffer if any
@@ -362,12 +513,13 @@ M.run_command_in_terminal_window = function(args, opts)
               end
             end
 
-            local display_lines, line_to_commit = build_display_lines(commits, expanded_commits)
+            local display_lines, line_to_commit, display_prefix_info = build_display_lines(commits, expanded_commits)
 
             buffer_state[buffer] = {
               commits = commits,
               expanded_commits = expanded_commits,
               line_to_commit = line_to_commit,
+              display_prefix_info = display_prefix_info,
             }
 
             vim.bo[buffer].modifiable = true
