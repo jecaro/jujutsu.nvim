@@ -100,7 +100,12 @@ local diff_presets = {
 
   diffview = function(changes)
     if #changes == 1 then
-      vim.cmd(string.format("DiffviewOpen %s^!", changes[1].commit_sha))
+      if changes[1].is_working_copy then
+        -- For working copy, show editable working files against parent
+        vim.cmd("DiffviewOpen")
+      else
+        vim.cmd(string.format("DiffviewOpen %s^!", changes[1].commit_sha))
+      end
     else
       vim.cmd(string.format("DiffviewOpen %s...%s", changes[1].commit_sha .. "~1", changes[#changes].commit_sha))
     end

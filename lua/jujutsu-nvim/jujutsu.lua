@@ -6,6 +6,7 @@ local terminal_buffer = require("jujutsu-nvim.terminal_buffer")
 --- @field change_id string Short change ID
 --- @field commit_sha string Full commit SHA
 --- @field description string Change description
+--- @field is_working_copy boolean? True if this is the working copy (@)
 
 --- @param cmd string[]
 --- @param on_success function?
@@ -27,6 +28,16 @@ end
 --------------------------------------------------------------------------------
 -- Change queries
 
+--- Get the working copy change ID synchronously
+--- @return string? change_id Short change ID of working copy, or nil if not found
+M.get_working_copy_id = function()
+  local result = vim.system({ "jj", "log", "-r", "@", "--no-graph", "-T", "change_id.short()" }, { text = true }):wait()
+  if result.code == 0 and result.stdout then
+    return result.stdout:gsub("^%s*(.-)%s*$", "%1")
+  end
+  return nil
+end
+
 --- Combine multiple change IDs into a revset expression
 --- @param change_ids string[] Array of change IDs
 --- @return string Revset expression
@@ -39,6 +50,7 @@ end
 --- @param callback fun(changes: JJChange[]) Callback with array of changes
 M.get_changes = function(revset, callback)
   local template = 'separate(";", change_id.short(), commit_id, coalesce(description, " ")) ++ "\n---END-CHANGE---\n"'
+  local working_copy_id = M.get_working_copy_id()
 
   run_jj_command(
     { "jj", "log", "--no-graph", "-r", revset, "-T", template },
@@ -58,7 +70,8 @@ M.get_changes = function(revset, callback)
             table.insert(changes, {
               change_id = change_id,
               commit_sha = commit_sha,
-              description = description
+              description = description,
+              is_working_copy = working_copy_id and change_id == working_copy_id,
             })
           end
         end
