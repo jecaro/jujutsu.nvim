@@ -860,15 +860,40 @@ local function open_diff_for_changes()
   end
 end
 
+--- Parse jj rename syntax like "prefix{old => new}suffix" into old and new paths
+--- @param raw_path string The raw path potentially containing {old => new} syntax
+--- @return string old_path, string new_path
+local function parse_rename_path(raw_path)
+  -- Match the {old => new} pattern
+  local prefix, old_part, new_part, suffix = raw_path:match("^(.-)%{(.-)%s*=>%s*(.-)%}(.*)$")
+  if prefix then
+    local old_path = prefix .. old_part .. suffix
+    local new_path = prefix .. new_part .. suffix
+    return old_path, new_path
+  end
+  -- No rename syntax, return the path as both old and new
+  return raw_path, raw_path
+end
+
 --- Extract file path from a file line in the JJ log buffer
 --- @param line string The line content
---- @return string? filepath, string? status (M/A/D/R/C)
+--- @return string? filepath The new/current file path (for renames, this is the destination)
+--- @return string? status (M/A/D/R/C)
+--- @return string? old_filepath For renames, the original file path; nil otherwise
 local function extract_file_path(line)
   -- File lines can start with graph chars (│├─╯╰etc), ~ or just spaces
   local after_graph = line:match("^[│├─╯╰┌└┐┘╮╭╋┼┬┴~ ]+(.*)$")
-  if not after_graph then return nil, nil end
-  local status, filepath = after_graph:match("^([MADRC])%s+(.+)$")
-  return filepath, status
+  if not after_graph then return nil, nil, nil end
+  local status, raw_filepath = after_graph:match("^([MADRC])%s+(.+)$")
+  if not raw_filepath then return nil, nil, nil end
+
+  -- For renames, parse the {old => new} syntax
+  if status == "R" then
+    local old_path, new_path = parse_rename_path(raw_filepath)
+    return new_path, status, old_path
+  end
+
+  return raw_filepath, status, nil
 end
 
 --- Check if the commit at cursor line is the working copy (has @ marker)
@@ -1018,12 +1043,15 @@ end
 
 local function diff_file_split()
   local line = vim.api.nvim_get_current_line()
-  local filepath, status = extract_file_path(line)
+  local filepath, status, old_filepath = extract_file_path(line)
 
   if not filepath then
     vim.notify("Cursor not on a file line", vim.log.levels.WARN)
     return
   end
+
+  -- For renames, use old path for parent revision; otherwise use filepath for both
+  local parent_filepath = old_filepath or filepath
 
   -- Get the change_id for this line
   local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
@@ -1086,13 +1114,13 @@ local function diff_file_split()
 
   local ft = vim.filetype.match({ filename = filepath })
 
-  -- Setup left buffer (parent revision)
+  -- Setup left buffer (parent revision) - use parent_filepath for renames
   local left_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_win_set_buf(diff_win_left, left_buf)
   vim.bo[left_buf].buftype = 'nofile'
   vim.bo[left_buf].bufhidden = 'wipe'
   vim.bo[left_buf].swapfile = false
-  pcall(vim.api.nvim_buf_set_name, left_buf, string.format("[JJ %s] %s", parent_rev, filepath))
+  pcall(vim.api.nvim_buf_set_name, left_buf, string.format("[JJ %s] %s", parent_rev, parent_filepath))
   if ft then vim.bo[left_buf].filetype = ft end
 
   -- Setup right side
@@ -1138,9 +1166,9 @@ local function diff_file_split()
     end
   end
 
-  -- Fetch left (parent) content
+  -- Fetch left (parent) content - use parent_filepath for renames
   vim.system(
-    { "jj", "file", "show", "-r", parent_rev, filepath },
+    { "jj", "file", "show", "-r", parent_rev, parent_filepath },
     { text = true },
     function(result)
       vim.schedule(function()
